@@ -13,6 +13,8 @@
 # 
 # Cleanup and delete the cluster: 
 # az group delete --name aro && az group delete --name NetworkWatcherRG && az group delete --name NetworkWatcher_centralus
+#
+# To run this playbook, please ensure you're logged into your Azure account: az login. Then run ansible-playbook aro_deployment.yaml
 
 - hosts: localhost
   connection: local
@@ -58,7 +60,7 @@
               --worker-subnet worker-subnet
               --pull-secret @pull-secret.txt
               --domain {{ DOMAIN }}
-# Post install operations 
+# Post install commands 
   - name: "Post install operations"
     command: az aro list-credentials \
               --name {{CLUSTER}} \
