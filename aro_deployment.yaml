@@ -5,7 +5,7 @@
 # from console.redhat.com
 # The domain is optional, so feel free to comment it out
 # 
-# Make you have at least 50 vCPUs in your target deployment region. 
+# Make you have at least 40-50 vCPUs in your target deployment region. 
 # az vm list-usage --location "Central US" --output table | grep "Total Regional vCPUs" 
 # 
 # Make sure the default worker nodes have enough quote. i.e., you need at least 36 vCPUS.
@@ -20,7 +20,7 @@
     LOCATION: centralus
     RESOURCEGROUP: aro
     CLUSTER: aro-cluster
-    DOMAIN: apps.openshifthelp.com
+    DOMAIN: openshifthelp.com
 
   tasks:
   - name: "Create resource group"
@@ -58,3 +58,13 @@
               --worker-subnet worker-subnet
               --pull-secret @pull-secret.txt
               --domain {{ DOMAIN }}
+# Post install operations 
+  - name: "Post install operations"
+    command: az aro list-credentials \
+              --name {{CLUSTER}} \
+              --resource-group {{RESOURCEGROUP}}
+  - name: "List the OpenShift console URL"
+    command: az aro show \
+              --name {{CLUSTER}} \
+              --resource-group {{RESOURCEGROUP}} \
+              --query "consoleProfile.url" -o tsv
