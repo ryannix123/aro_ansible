@@ -11,7 +11,7 @@
 # Make sure the default worker nodes have enough quote. i.e., you need at least 36 vCPUS.
 # az vm list-usage --location "Central US" --output table | grep "Standard DSv3 Family vCPUs"
 # 
-# Cleanup: 
+# Cleanup and delete the cluster: 
 # az group delete --name aro && az group delete --name NetworkWatcherRG && az group delete --name NetworkWatcher_centralus
 
 - hosts: localhost
