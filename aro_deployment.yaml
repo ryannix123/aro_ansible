@@ -5,13 +5,13 @@
 # from console.redhat.com
 # The domain is optional, so feel free to comment it out
 # 
-# Make you have at least 40-50 vCPUs in your target deployment region. 
+# Make sure you have at least 40-50 vCPUs in your target deployment region. 
 # az vm list-usage --location "Central US" --output table | grep "Total Regional vCPUs" 
 # 
-# Make sure the default worker nodes have enough quote. i.e., you need at least 36 vCPUS.
+# Make sure the default worker nodes have enough quota. i.e., you need at least 36 vCPUS.
 # az vm list-usage --location "Central US" --output table | grep "Standard DSv3 Family vCPUs"
 # 
-# Cleanup and delete the cluster: 
+# To delete the cluster and remove other resources: 
 # az group delete --name aro && az group delete --name NetworkWatcherRG && az group delete --name NetworkWatcher_centralus
 #
 # To run this playbook, please ensure you're logged into your Azure account: az login. Then run ansible-playbook aro_deployment.yaml
@@ -65,10 +65,14 @@
     command: az aro list-credentials \
               --name {{CLUSTER}} \
               --resource-group {{RESOURCEGROUP}}
-    register: command_output
+    register: results
+  - debug:
+      var: results.stdout
   - name: "List the OpenShift console URL"
     command: az aro show \
               --name {{CLUSTER}} \
               --resource-group {{RESOURCEGROUP}} \
               --query "consoleProfile.url" -o tsv
-    register: command_output
+    register: results
+  - debug:
+      var: results.stdout
