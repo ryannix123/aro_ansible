@@ -61,12 +61,14 @@
               --pull-secret @pull-secret.txt
               --domain {{ DOMAIN }}
 # Post install commands 
-  - name: "Post install operations"
+  - name: "List Kubeadmin credentials"
     command: az aro list-credentials \
               --name {{CLUSTER}} \
               --resource-group {{RESOURCEGROUP}}
+    register: command_output
   - name: "List the OpenShift console URL"
     command: az aro show \
               --name {{CLUSTER}} \
               --resource-group {{RESOURCEGROUP}} \
               --query "consoleProfile.url" -o tsv
+    register: command_output
