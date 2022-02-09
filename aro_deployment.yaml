@@ -1,0 +1,60 @@
+# Description
+# ===========
+# This playbook creates an Azure Red Hat OpenShift cluster
+# Run this playbook from the same location as the pull-secret you downloaded
+# from console.redhat.com
+# The domain is optional, so feel free to comment it out
+# 
+# Make you have at least 50 vCPUs in your target deployment region. 
+# az vm list-usage --location "Central US" --output table | grep "Total Regional vCPUs" 
+# 
+# Make sure the default worker nodes have enough quote. i.e., you need at least 36 vCPUS.
+# az vm list-usage --location "Central US" --output table | grep "Standard DSv3 Family vCPUs"
+# 
+# Cleanup: 
+# az group delete --name aro && az group delete --name NetworkWatcherRG && az group delete --name NetworkWatcher_centralus
+
+- hosts: localhost
+  connection: local
+  vars:
+    LOCATION: centralus
+    RESOURCEGROUP: aro
+    CLUSTER: aro-cluster
+    DOMAIN: apps.openshifthelp.com
+
+  tasks:
+  - name: "Create resource group"
+    command:
+      cmd: az group create --name {{ RESOURCEGROUP }} --location {{ LOCATION }}
+  - name: "Create a new virtual network in the same resource group you created earlier"
+    command: az network vnet create --resource-group {{ RESOURCEGROUP }} \
+              --name aro-vnet --address-prefixes 10.0.0.0/22
+  - name: "Add an empty subnet for the master nodes"
+    command: az network vnet subnet create \
+              --resource-group {{ RESOURCEGROUP }} \
+              --vnet-name aro-vnet \
+              --name master-subnet \
+              --address-prefixes 10.0.0.0/23 \
+              --service-endpoints Microsoft.ContainerRegistry
+  - name: "Add an empty subnet for the worker nodes"
+    command: az network vnet subnet create \
+              --resource-group {{ RESOURCEGROUP }} \
+              --vnet-name aro-vnet \
+              --name worker-subnet \
+              --address-prefixes 10.0.2.0/23 \
+              --service-endpoints Microsoft.ContainerRegistry
+  - name: "Disable subnet private endpoint policies on the master subnet"
+    command: az network vnet subnet update \
+              --name master-subnet \
+              --resource-group {{ RESOURCEGROUP }} \
+              --vnet-name aro-vnet \
+              --disable-private-link-service-network-policies true
+  - name: "Create the ARO cluster!"
+    command: az aro create \
+              --resource-group {{ RESOURCEGROUP }} \
+              --name {{ CLUSTER }} \
+              --vnet aro-vnet \
+              --master-subnet master-subnet \
+              --worker-subnet worker-subnet
+              --pull-secret @pull-secret.txt
+              --domain {{ DOMAIN }}
