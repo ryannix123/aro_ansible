@@ -51,7 +51,7 @@
               --resource-group {{ RESOURCEGROUP }} \
               --vnet-name aro-vnet \
               --disable-private-link-service-network-policies true
-  - name: "Create the ARO cluster!"
+  - name: "Now let's create the ARO cluster. Please check back in roughly 20-30 minutes."
     command: az aro create \
               --resource-group {{ RESOURCEGROUP }} \
               --name {{ CLUSTER }} \
