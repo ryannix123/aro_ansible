@@ -1,7 +1,8 @@
 # Description
 # ===========
 # This playbook creates an Azure Red Hat OpenShift cluster
-# Run this playbook from the same location as the pull-secret you downloaded
+# Run this playbook from the same location as the pull-secret you downloaded. If you don't specify your --pull-secret 
+# your cluster will not include samples or operators from Red Hat or from certified partners.
 # from console.redhat.com
 # The domain is optional, so feel free to comment it out
 # 
@@ -10,11 +11,14 @@
 # 
 # Make sure the default worker nodes have enough quota. i.e., you need at least 36 vCPUS.
 # az vm list-usage --location "Central US" --output table | grep "Standard DSv3 Family vCPUs"
+#
+# To run this playbook, please ensure you're logged into your Azure account: az login. Then run ansible-playbook aro_deployment.yaml
+# If you don't specify your --pull-secret your cluster will not include samples or operators from Red Hat or from certified partners.
+#
+# If you specify the --domain foo.example.com parameter you are responsible for creating the api and *.apps DNS A or CNAME records.
 # 
 # To delete the cluster and remove other resources: 
 # az group delete --name aro && az group delete --name NetworkWatcherRG && az group delete --name NetworkWatcher_centralus
-#
-# To run this playbook, please ensure you're logged into your Azure account: az login. Then run ansible-playbook aro_deployment.yaml
 
 - hosts: localhost
   connection: local
@@ -23,8 +27,10 @@
     RESOURCEGROUP: aro
     CLUSTER: aro-cluster
     DOMAIN: openshifthelp.com
-    MASTER: Standard_D8_v3
-    WORKER: Standard_D8_v3
+    MASTER_SIZE : Standard_D8_v3
+    WORKER_SIZE : Standard_D8_v3
+    WORKER_COUNT: 3
+    DISK_SIZE: 128
 
   tasks:
   - name: "Create resource group"
@@ -62,8 +68,10 @@
               --worker-subnet worker-subnet
               --pull-secret @pull-secret.txt
               --domain {{ DOMAIN }}
-              --master-vm-size {{ MASTER }}
-              --worker-vm-size {{ WORKER }}
+#              --master-vm-size {{ MASTER_SIZE }}
+#              --worker-vm-size {{ WORKER_SIZE }}
+#              --worker-count {{ WORKER_COUNT }}
+#              --worker-vm-disk-size-gb {{ DISK_SIZE }}
 # Post install commands 
   - name: "List Kubeadmin credentials"
     command: az aro list-credentials \
