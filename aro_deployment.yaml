@@ -23,6 +23,8 @@
     RESOURCEGROUP: aro
     CLUSTER: aro-cluster
     DOMAIN: openshifthelp.com
+    MASTER: Standard_D8_v3
+    WORKER: Standard_D8_v3
 
   tasks:
   - name: "Create resource group"
@@ -60,6 +62,8 @@
               --worker-subnet worker-subnet
               --pull-secret @pull-secret.txt
               --domain {{ DOMAIN }}
+              --master-vm-size {{ MASTER }}
+              --worker-vm-size {{ WORKER }}
 # Post install commands 
   - name: "List Kubeadmin credentials"
     command: az aro list-credentials \
