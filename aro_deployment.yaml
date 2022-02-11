@@ -27,8 +27,8 @@
     RESOURCEGROUP: aro
     CLUSTER: aro-cluster
     DOMAIN: openshifthelp.com
-    MASTER_SIZE : Standard_D8_v3
-    WORKER_SIZE : Standard_D8_v3
+    MASTER_SIZE : Standard_D8s_v3
+    WORKER_SIZE : Standard_D4s_v3
     WORKER_COUNT: 3
     DISK_SIZE: 128
 
@@ -68,10 +68,10 @@
               --worker-subnet worker-subnet
               --pull-secret @pull-secret.txt
               --domain {{ DOMAIN }}
-#              --master-vm-size {{ MASTER_SIZE }}
-#              --worker-vm-size {{ WORKER_SIZE }}
-#              --worker-count {{ WORKER_COUNT }}
-#              --worker-vm-disk-size-gb {{ DISK_SIZE }}
+              --master-vm-size {{ MASTER_SIZE }}
+              --worker-vm-size {{ WORKER_SIZE }}
+              --worker-count {{ WORKER_COUNT }}
+              --worker-vm-disk-size-gb {{ DISK_SIZE }}
 # Post install commands 
   - name: "List Kubeadmin credentials"
     command: az aro list-credentials \
