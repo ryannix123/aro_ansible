@@ -72,19 +72,25 @@
               --worker-vm-size {{ WORKER_SIZE }}
               --worker-count {{ WORKER_COUNT }}
               --worker-vm-disk-size-gb {{ DISK_SIZE }}
-# Post install commands 
+# Post install commands
   - name: "List Kubeadmin credentials"
     command: az aro list-credentials \
-              --name {{CLUSTER}} \
-              --resource-group {{RESOURCEGROUP}}
+              --name {{ CLUSTER }} \
+              --resource-group {{ RESOURCEGROUP }}
     register: results
   - debug:
       var: results.stdout
   - name: "List the OpenShift console URL"
     command: az aro show \
-              --name {{CLUSTER}} \
-              --resource-group {{RESOURCEGROUP}} \
+              --name {{ CLUSTER }} \
+              --resource-group {{ RESOURCEGROUP }} \
               --query "consoleProfile.url" -o tsv
+    register: results
+  - debug:
+      var: results.stdout
+  - name: "List the cluster's details, including the API and ingress"
+    command: az aro show 
+             --name {{ CLUSTER }} --resource-group {{ RESOURCEGROUP }}
     register: results
   - debug:
       var: results.stdout
