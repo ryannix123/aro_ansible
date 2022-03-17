@@ -7,10 +7,12 @@
 # The domain is optional, so feel free to comment it out
 # 
 # Make sure you have at least 40-50 vCPUs in your target deployment region. 
+# https://docs.microsoft.com/en-us/azure/azure-portal/supportability/regional-quota-requests
 # az vm list-usage --location "Central US" --output table | grep "Total Regional vCPUs" 
 # 
 # Make sure the default worker nodes have enough quota. i.e., you need at least 36 vCPUS.
 # az vm list-usage --location "Central US" --output table | grep "Standard DSv3 Family vCPUs"
+# https://docs.microsoft.com/en-us/azure/azure-portal/supportability/per-vm-quota-requests?wt.mc_id=aroworkshop
 #
 # To run this playbook, please ensure you're logged into your Azure account: az login. Then run ansible-playbook aro_deployment.yaml
 # If you don't specify your --pull-secret your cluster will not include samples or operators from Red Hat or from certified partners.
