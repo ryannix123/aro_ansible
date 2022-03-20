@@ -17,7 +17,7 @@ While not required to deploy ARO, an image pull secret provides authentication f
 
 [1]: https://github.com/ryannix123/aro_ansible/blob/main/Instructions.md
 
-# [YouTube Tutorial] [2]
+# YouTube [Tutorial] [2]
 
 [2] https://youtu.be/d701iQ2v2J0
 
