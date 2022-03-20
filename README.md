@@ -19,7 +19,7 @@ While not required to deploy ARO, an image pull secret provides authentication f
 
 # YouTube [Tutorial] [2]
 
-[2] https://youtu.be/d701iQ2v2J0
+[2]: https://youtu.be/d701iQ2v2J0
 
 
 
