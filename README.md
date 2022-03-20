@@ -12,3 +12,9 @@ oc / kubectl binaries - https://mirror.openshift.com/pub/openshift-v4/clients/oc
 # Recommendations:
 An OpenShift Pull Secret - https://cloud.redhat.com
 While not required to deploy ARO, an image pull secret provides authentication for the cluster to access services and registries which serve the container images for OpenShift components.
+
+[Instructions][1]
+
+[1]: https://github.com/ryannix123/aro_ansible/blob/main/Instructions.md
+
+
