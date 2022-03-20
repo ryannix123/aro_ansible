@@ -7,6 +7,7 @@ This playbook simplifies the deployment of an Azure Red Hat OpenShift cluster us
 # Prerequesties for running this playbook:
 
 The Azure CLI binary - https://docs.microsoft.com/en-us/cli/azure/
+
 The latest oc & kubectl CLI binaries - https://mirror.openshift.com/pub/openshift-v4/clients/ocp/latest/
 
 # Recommendations:
