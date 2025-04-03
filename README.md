@@ -27,7 +27,7 @@ Before running the playbook, ensure you have:
   pip install -r ~/.ansible/collections/ansible_collections/azure/azcollection/requirements-azure.txt
   ```
 - **OpenShift CLI tools** - [Latest `oc` & `kubectl` binaries](https://mirror.openshift.com/pub/openshift-v4/clients/ocp/latest/)
-- **Red Hat Pull Secret** (strongly recommended) - [Available from cloud.redhat.com](https://cloud.redhat.com)
+- **Red Hat Pull Secret** (Required) - [Available from cloud.redhat.com](https://cloud.redhat.com)
 
 ## Quota Requirements
 
