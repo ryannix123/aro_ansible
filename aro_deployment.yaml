@@ -1,98 +1,189 @@
+---
 # Description
 # ===========
 # This playbook creates an Azure Red Hat OpenShift cluster
-# Run this playbook from the same location as the pull-secret you downloaded. If you don't specify your --pull-secret 
-# your cluster will not include samples or operators from Red Hat or from certified partners.
-# from console.redhat.com
-# The domain is optional, so feel free to comment it out
-# 
-# Make sure you have at least 40-50 vCPUs in your target deployment region. 
-# https://docs.microsoft.com/en-us/azure/azure-portal/supportability/regional-quota-requests
-# az vm list-usage --location "Central US" --output table | grep "Total Regional vCPUs" 
-# 
-# Make sure the default worker nodes have enough quota. i.e., you need at least 36 vCPUS.
-# az vm list-usage --location "Central US" --output table | grep "Standard DSv3 Family vCPUs"
-# https://docs.microsoft.com/en-us/azure/azure-portal/supportability/per-vm-quota-requests?wt.mc_id=aroworkshop
-#
-# To run this playbook, please ensure you're logged into your Azure account: az login. Then run ansible-playbook aro_deployment.yaml
-# If you don't specify your --pull-secret your cluster will not include samples or operators from Red Hat or from certified partners.
-#
-# If you specify the --domain foo.example.com parameter you are responsible for creating the api and *.apps DNS A or CNAME records.
-# 
-# To delete the cluster and remove other resources: 
-# az group delete --name aro && az group delete --name NetworkWatcherRG && az group delete --name NetworkWatcher_centralus
+# Prerequisites:
+#  - az login (Authenticate to Azure)
+#  - pull-secret.txt (Downloaded from console.redhat.com)
+#  - Sufficient vCPU quota (At least 40-50 vCPUs in target region)
+#    Check with: az vm list-usage --location "Central US" --output table | grep "Total Regional vCPUs"
+#  - Sufficient quota for worker nodes (At least 36 vCPUs)
+#    Check with: az vm list-usage --location "Central US" --output table | grep "Standard DSv3 Family vCPUs"
 
-- hosts: localhost
+- name: Deploy Azure Red Hat OpenShift Cluster
+  hosts: localhost
   connection: local
-  vars:
-    LOCATION: centralus
-    RESOURCEGROUP: aro
-    CLUSTER: aro-cluster
-    DOMAIN: openshifthelp.com
-    MASTER_SIZE : Standard_D8s_v3
-    WORKER_SIZE : Standard_D4s_v3
-    WORKER_COUNT: 3
-    DISK_SIZE: 128
+  collections:
+    - azure.azcollection
+  vars_files:
+    - aro_vars.yml
 
   tasks:
-  - name: "Create resource group"
-    command:
-      cmd: az group create --name {{ RESOURCEGROUP }} --location {{ LOCATION }}
-  - name: "Create a new virtual network in the same resource group you created earlier"
-    command: az network vnet create --resource-group {{ RESOURCEGROUP }} \
-              --name aro-vnet --address-prefixes 10.0.0.0/22
-  - name: "Add an empty subnet for the master nodes"
-    command: az network vnet subnet create \
-              --resource-group {{ RESOURCEGROUP }} \
-              --vnet-name aro-vnet \
-              --name master-subnet \
-              --address-prefixes 10.0.0.0/23 \
-              --service-endpoints Microsoft.ContainerRegistry
-  - name: "Add an empty subnet for the worker nodes"
-    command: az network vnet subnet create \
-              --resource-group {{ RESOURCEGROUP }} \
-              --vnet-name aro-vnet \
-              --name worker-subnet \
-              --address-prefixes 10.0.2.0/23 \
-              --service-endpoints Microsoft.ContainerRegistry
-  - name: "Disable subnet private endpoint policies on the master subnet"
-    command: az network vnet subnet update \
-              --name master-subnet \
-              --resource-group {{ RESOURCEGROUP }} \
-              --vnet-name aro-vnet \
-              --disable-private-link-service-network-policies true
-  - name: "Now, let's create the ARO cluster. Please check back in roughly 20-30 minutes."
-    command: az aro create \
-              --resource-group {{ RESOURCEGROUP }} \
-              --name {{ CLUSTER }} \
-              --vnet aro-vnet \
-              --master-subnet master-subnet \
-              --worker-subnet worker-subnet
-              --pull-secret @pull-secret.txt
-              --domain {{ DOMAIN }}
-              --master-vm-size {{ MASTER_SIZE }}
-              --worker-vm-size {{ WORKER_SIZE }}
-              --worker-count {{ WORKER_COUNT }}
-              --worker-vm-disk-size-gb {{ DISK_SIZE }}
-# Post install commands
-  - name: "List Kubeadmin credentials"
-    command: az aro list-credentials \
-              --name {{ CLUSTER }} \
-              --resource-group {{ RESOURCEGROUP }}
-    register: results
-  - debug:
-      var: results.stdout
-  - name: "List the OpenShift console URL"
-    command: az aro show \
-              --name {{ CLUSTER }} \
-              --resource-group {{ RESOURCEGROUP }} \
-              --query "consoleProfile.url" -o tsv
-    register: results
-  - debug:
-      var: results.stdout
-  - name: "List the cluster's details, including the API and ingress"
-    command: az aro show 
-             --name {{ CLUSTER }} --resource-group {{ RESOURCEGROUP }}
-    register: results
-  - debug:
-      var: results.stdout
+    - name: Set facts for ARO deployment
+      set_fact:
+        timestamp: "{{ lookup('pipe', 'date +%Y%m%d%H%M%S') }}"
+      
+    - name: Verify Azure CLI is installed and authenticated
+      shell: az account show
+      register: az_account
+      failed_when: az_account.rc != 0
+      changed_when: false
+      
+    - name: Check if resource group exists
+      azure_rm_resourcegroup_info:
+        name: "{{ resource_group }}"
+      register: rg_exists
+      
+    - name: Create resource group if it doesn't exist
+      azure_rm_resourcegroup:
+        name: "{{ resource_group }}"
+        location: "{{ location }}"
+      when: rg_exists.resourcegroups | length == 0
+      
+    - name: Check if virtual network exists
+      azure_rm_virtualnetwork_info:
+        resource_group: "{{ resource_group }}"
+        name: "{{ vnet_name }}"
+      register: vnet_exists
+      
+    - name: Create virtual network
+      azure_rm_virtualnetwork:
+        resource_group: "{{ resource_group }}"
+        name: "{{ vnet_name }}"
+        address_prefixes: "{{ vnet_cidr }}"
+      when: vnet_exists.virtualnetworks | length == 0
+      
+    - name: Create master subnet
+      azure_rm_subnet:
+        resource_group: "{{ resource_group }}"
+        virtual_network_name: "{{ vnet_name }}"
+        name: "{{ master_subnet_name }}"
+        address_prefix: "{{ master_subnet_cidr }}"
+        service_endpoints:
+          - service: Microsoft.ContainerRegistry
+      register: master_subnet
+      
+    - name: Create worker subnet
+      azure_rm_subnet:
+        resource_group: "{{ resource_group }}"
+        virtual_network_name: "{{ vnet_name }}"
+        name: "{{ worker_subnet_name }}"
+        address_prefix: "{{ worker_subnet_cidr }}"
+        service_endpoints:
+          - service: Microsoft.ContainerRegistry
+      register: worker_subnet
+      
+    - name: Disable subnet private endpoint policies on master subnet
+      command: >
+        az network vnet subnet update
+        --name {{ master_subnet_name }}
+        --resource-group {{ resource_group }}
+        --vnet-name {{ vnet_name }}
+        --disable-private-link-service-network-policies true
+      changed_when: true
+      
+    - name: Verify pull-secret file exists
+      stat:
+        path: "{{ pull_secret_file }}"
+      register: pull_secret_stat
+      
+    - name: Fail if pull-secret file is missing
+      fail:
+        msg: "Pull secret file {{ pull_secret_file }} not found. Download it from console.redhat.com"
+      when: not pull_secret_stat.stat.exists
+      
+    - name: Check if ARO cluster exists
+      command: >
+        az aro show
+        --name {{ cluster_name }}
+        --resource-group {{ resource_group }}
+      register: aro_exists
+      failed_when: false
+      changed_when: false
+      
+    - name: Create ARO cluster
+      command: >
+        az aro create
+        --resource-group {{ resource_group }}
+        --name {{ cluster_name }}
+        --vnet {{ vnet_name }}
+        --master-subnet {{ master_subnet_name }}
+        --worker-subnet {{ worker_subnet_name }}
+        --pull-secret @{{ pull_secret_file }}
+        {% if domain is defined and domain != "" %}
+        --domain {{ domain }}
+        {% endif %}
+        --master-vm-size {{ master_vm_size }}
+        --worker-vm-size {{ worker_vm_size }}
+        --worker-count {{ worker_count }}
+        --worker-vm-disk-size-gb {{ worker_vm_disk_size_gb }}
+        --tags 'Project=ARO-Deployment' 'DeployedBy=Ansible' 'DeploymentDate={{ timestamp }}'
+      register: aro_create
+      when: aro_exists.rc != 0
+      async: 3600  # Allow up to 1 hour for cluster creation
+      poll: 0
+      
+    - name: Check ARO cluster creation status
+      async_status:
+        jid: "{{ aro_create.ansible_job_id }}"
+      register: job_result
+      until: job_result.finished
+      retries: 60
+      delay: 60
+      when: aro_exists.rc != 0
+      
+    - name: Get Kubeadmin credentials
+      command: >
+        az aro list-credentials
+        --name {{ cluster_name }}
+        --resource-group {{ resource_group }}
+      register: kubeadmin_creds
+      changed_when: false
+
+    - name: Get OpenShift console URL
+      command: >
+        az aro show
+        --name {{ cluster_name }}
+        --resource-group {{ resource_group }}
+        --query "consoleProfile.url" -o tsv
+      register: console_url
+      changed_when: false
+      
+    - name: Get cluster details
+      command: >
+        az aro show
+        --name {{ cluster_name }}
+        --resource-group {{ resource_group }}
+      register: cluster_details
+      changed_when: false
+      
+    - name: Display ARO cluster information
+      debug:
+        msg: |
+          ARO Cluster Deployment Complete!
+          ================================
+          Console URL: {{ console_url.stdout }}
+          Admin Credentials: {{ kubeadmin_creds.stdout }}
+          
+    - name: Save cluster access information to file
+      copy:
+        content: |
+          ARO Cluster Information
+          ======================
+          Resource Group: {{ resource_group }}
+          Cluster Name: {{ cluster_name }}
+          Console URL: {{ console_url.stdout }}
+          Admin Credentials: {{ kubeadmin_creds.stdout | from_json | to_nice_json }}
+          API Server: {{ cluster_details.stdout | from_json | json_query('apiserverProfile.url') }}
+        dest: "aro-cluster-info-{{ timestamp }}.txt"
+        mode: '0600'
+      
+    - name: Provide next steps
+      debug:
+        msg: |
+          Next steps:
+          1. Access the cluster console at: {{ console_url.stdout }}
+          2. Login with credentials stored in aro-cluster-info-{{ timestamp }}.txt
+          3. Set up additional authentication methods (OAuth, LDAP, etc.)
+          4. Configure private networking if needed
+          5. Deploy applications
