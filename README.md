@@ -1,6 +1,6 @@
 # Azure Red Hat OpenShift (ARO) Deployment
 
-![Red Hat OpenShift Logo](https://www.redhat.com/themes/custom/rhdc/img/red-hat-openshift-logo.svg)
+![Red Hat OpenShift Logo](https://www.svgrepo.com/download/354143/openshift.svg)
 
 ## Overview
 
