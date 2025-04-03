@@ -4,7 +4,7 @@
 # This playbook creates an Azure Red Hat OpenShift cluster
 # Prerequisites:
 #  - az login (Authenticate to Azure)
-#  - pull-secret.txt (Downloaded from console.redhat.com)
+#  - vars/pull-secret.txt (Downloaded from console.redhat.com)
 #  - Sufficient vCPU quota (At least 40-50 vCPUs in target region)
 #    Check with: az vm list-usage --location "Central US" --output table | grep "Total Regional vCPUs"
 #  - Sufficient quota for worker nodes (At least 36 vCPUs)
@@ -16,18 +16,34 @@
   collections:
     - azure.azcollection
   vars_files:
-    - aro_vars.yml
+    - vars/aro_vars.yml
 
   tasks:
     - name: Set facts for ARO deployment
       set_fact:
         timestamp: "{{ lookup('pipe', 'date +%Y%m%d%H%M%S') }}"
       
+    - name: Create vars directory if it doesn't exist
+      file:
+        path: "vars"
+        state: directory
+        mode: '0755'
+      
     - name: Verify Azure CLI is installed and authenticated
       shell: az account show
       register: az_account
       failed_when: az_account.rc != 0
       changed_when: false
+      
+    - name: Verify pull-secret file exists
+      stat:
+        path: "{{ pull_secret_file }}"
+      register: pull_secret_stat
+      
+    - name: Fail if pull-secret file is missing
+      fail:
+        msg: "Pull secret file {{ pull_secret_file }} not found. Download it from console.redhat.com and place it in the vars directory"
+      when: not pull_secret_stat.stat.exists
       
     - name: Check if resource group exists
       azure_rm_resourcegroup_info:
@@ -81,16 +97,6 @@
         --vnet-name {{ vnet_name }}
         --disable-private-link-service-network-policies true
       changed_when: true
-      
-    - name: Verify pull-secret file exists
-      stat:
-        path: "{{ pull_secret_file }}"
-      register: pull_secret_stat
-      
-    - name: Fail if pull-secret file is missing
-      fail:
-        msg: "Pull secret file {{ pull_secret_file }} not found. Download it from console.redhat.com"
-      when: not pull_secret_stat.stat.exists
       
     - name: Check if ARO cluster exists
       command: >
@@ -175,7 +181,7 @@
           Console URL: {{ console_url.stdout }}
           Admin Credentials: {{ kubeadmin_creds.stdout | from_json | to_nice_json }}
           API Server: {{ cluster_details.stdout | from_json | json_query('apiserverProfile.url') }}
-        dest: "aro-cluster-info-{{ timestamp }}.txt"
+        dest: "vars/aro-cluster-info-{{ timestamp }}.txt"
         mode: '0600'
       
     - name: Provide next steps
@@ -183,7 +189,7 @@
         msg: |
           Next steps:
           1. Access the cluster console at: {{ console_url.stdout }}
-          2. Login with credentials stored in aro-cluster-info-{{ timestamp }}.txt
+          2. Login with credentials stored in vars/aro-cluster-info-{{ timestamp }}.txt
           3. Set up additional authentication methods (OAuth, LDAP, etc.)
           4. Configure private networking if needed
           5. Deploy applications

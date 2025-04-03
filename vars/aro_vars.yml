@@ -15,11 +15,11 @@ worker_subnet_cidr: 10.0.2.0/23
 
 # ARO Cluster Configuration
 cluster_name: aro-cluster
-domain: openshifthelp.com  # Optional, remove this line if domain is not needed
+domain: openshifthelp.com # Optional, remove this line if domain is not needed
 master_vm_size: Standard_D8s_v3
 worker_vm_size: Standard_D4s_v3
 worker_count: 3
 worker_vm_disk_size_gb: 128
 
 # Path to pull secret file
-pull_secret_file: pull-secret.txt
+pull_secret_file: vars/pull-secret.txt
