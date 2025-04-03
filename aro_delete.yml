@@ -1,0 +1,136 @@
+---
+# Description
+# ===========
+# This playbook deletes an Azure Red Hat OpenShift cluster
+# Prerequisites:
+#  - az login (Authenticate to Azure)
+#  - vars/aro_vars.yml with resource group and cluster name
+
+- name: Delete Azure Red Hat OpenShift Cluster
+  hosts: localhost
+  connection: local
+  collections:
+    - azure.azcollection
+  vars_files:
+    - vars/aro_vars.yml
+
+  tasks:
+    - name: Set facts for ARO deletion
+      set_fact:
+        timestamp: "{{ lookup('pipe', 'date +%Y%m%d%H%M%S') }}"
+      
+    - name: Verify Azure CLI is installed and authenticated
+      shell: az account show
+      register: az_account
+      failed_when: az_account.rc != 0
+      changed_when: false
+      
+    - name: Check if ARO cluster exists
+      command: >
+        az aro show
+        --name {{ cluster_name }}
+        --resource-group {{ resource_group }}
+      register: aro_exists
+      failed_when: false
+      changed_when: false
+      
+    - name: Confirm deletion
+      pause:
+        prompt: |
+          WARNING: You are about to delete the ARO cluster '{{ cluster_name }}' in resource group '{{ resource_group }}'.
+          This operation cannot be undone. All data in the cluster will be permanently deleted.
+          
+          Type 'yes' to confirm deletion or press Ctrl+C to abort
+      register: confirmation
+      
+    - name: Verify confirmation
+      fail:
+        msg: "Deletion aborted by user"
+      when: confirmation.user_input != 'yes'
+      
+    - name: Delete ARO cluster
+      command: >
+        az aro delete
+        --name {{ cluster_name }}
+        --resource-group {{ resource_group }}
+        --yes
+      register: aro_delete
+      when: aro_exists.rc == 0
+      async: 3600  # Allow up to 1 hour for cluster deletion
+      poll: 0
+      
+    - name: Check ARO cluster deletion status
+      async_status:
+        jid: "{{ aro_delete.ansible_job_id }}"
+      register: job_result
+      until: job_result.finished
+      retries: 60
+      delay: 60
+      when: aro_exists.rc == 0
+      
+    - name: List remaining resources in resource group
+      azure_rm_resource_info:
+        resource_group: "{{ resource_group }}"
+      register: remaining_resources
+      when: aro_exists.rc == 0
+      
+    - name: Display remaining resources
+      debug:
+        var: remaining_resources
+      when: aro_exists.rc == 0
+      
+    - name: Confirm resource group deletion
+      pause:
+        prompt: |
+          ARO cluster '{{ cluster_name }}' has been deleted.
+          
+          Do you want to delete the resource group '{{ resource_group }}' as well?
+          This will delete ALL resources in this resource group.
+          
+          Type 'yes' to confirm deletion or press Ctrl+C to abort
+      register: rg_confirmation
+      when: aro_exists.rc == 0
+      
+    - name: Delete resource group
+      azure_rm_resourcegroup:
+        name: "{{ resource_group }}"
+        state: absent
+        force_delete_nonempty: true
+      register: rg_delete
+      when: aro_exists.rc == 0 and rg_confirmation.user_input == 'yes'
+      
+    - name: Log deletion action
+      copy:
+        content: |
+          ARO Cluster Deletion Log
+          =======================
+          Date: {{ timestamp }}
+          Resource Group: {{ resource_group }}
+          Cluster Name: {{ cluster_name }}
+          Status: Deleted
+          Resource Group Deleted: {{ rg_confirmation.user_input == 'yes' }}
+        dest: "vars/aro-deletion-log-{{ timestamp }}.txt"
+        mode: '0600'
+      when: aro_exists.rc == 0
+      
+    - name: Display deletion complete message
+      debug:
+        msg: |
+          ARO Cluster Deletion Complete!
+          ==============================
+          The ARO cluster '{{ cluster_name }}' has been deleted.
+          {% if rg_confirmation.user_input == 'yes' %}
+          The resource group '{{ resource_group }}' has also been deleted.
+          {% else %}
+          The resource group '{{ resource_group }}' has been preserved.
+          {% endif %}
+      when: aro_exists.rc == 0
+      
+    - name: Display no cluster message
+      debug:
+        msg: |
+          ARO Cluster Not Found!
+          =====================
+          The ARO cluster '{{ cluster_name }}' does not exist in resource group '{{ resource_group }}'.
+          No action was taken.
+      when: aro_exists.rc != 0
