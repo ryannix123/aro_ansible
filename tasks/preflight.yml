@@ -1,0 +1,102 @@
+---
+# Shared pre-flight checks: auth, resource providers, vCPU quota.
+
+- name: Set run timestamp
+  ansible.builtin.set_fact:
+    timestamp: "{{ now(utc=true, fmt='%Y%m%d%H%M%S') }}"
+
+- name: Verify Azure CLI is installed and authenticated
+  ansible.builtin.command: az account show -o json
+  register: az_account
+  changed_when: false
+
+- name: Record subscription
+  ansible.builtin.set_fact:
+    az_subscription_id: "{{ (az_account.stdout | from_json).id }}"
+    az_subscription_name: "{{ (az_account.stdout | from_json).name }}"
+
+- name: Check resource provider registration
+  ansible.builtin.command: >
+    az provider show --namespace {{ item }} --query registrationState -o tsv
+  loop: "{{ _providers }}"
+  register: provider_state
+  changed_when: false
+  vars:
+    _providers:
+      - Microsoft.RedHatOpenShift
+      - Microsoft.Compute
+      - Microsoft.Storage
+      - Microsoft.Authorization
+      - Microsoft.Network
+      - Microsoft.KeyVault
+      - Microsoft.ManagedIdentity
+
+- name: Register missing resource providers
+  ansible.builtin.command: az provider register --namespace {{ item.item }} --wait
+  loop: "{{ provider_state.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+  when: item.stdout != 'Registered'
+  changed_when: true
+
+# ---------- vCPU quota ----------
+- name: Collect VM sizes this deployment needs
+  ansible.builtin.set_fact:
+    _sizes_needed: >-
+      {{ [{'size': master_vm_size, 'count': 3}, {'size': worker_vm_size, 'count': worker_count | int}]
+         if aro_architecture == 'classic'
+         else [{'size': hcp_node_vm_size, 'count': hcp_node_count | int}] }}
+
+- name: Look up vCPUs per VM size
+  ansible.builtin.command: >
+    az vm list-skus --location {{ location }} --resource-type virtualMachines
+    --size {{ item.size }} -o json
+    --query "[?name=='{{ item.size }}'] | [0].capabilities[?name=='vCPUs'].value | [0]"
+  loop: "{{ _sizes_needed }}"
+  loop_control:
+    label: "{{ item.size }}"
+  register: sku_vcpus
+  changed_when: false
+
+- name: Fail if a VM size is not offered in this region
+  ansible.builtin.fail:
+    msg: "VM size {{ item.item.size }} is not available in {{ location }}."
+  loop: "{{ sku_vcpus.results }}"
+  loop_control:
+    label: "{{ item.item.size }}"
+  when: item.stdout | trim in ['', 'null']
+
+- name: Read regional vCPU usage
+  ansible.builtin.command: >
+    az vm list-usage --location {{ location }} -o json
+    --query "[?name.value=='cores'] | [0]"
+  register: core_usage
+  changed_when: false
+
+- name: Compare required vCPUs with available quota
+  ansible.builtin.set_fact:
+    _vcpus_required: >-
+      {% set ns = namespace(total=8 if aro_architecture == 'classic' else 0) %}
+      {% for r in sku_vcpus.results %}
+      {% set ns.total = ns.total + (r.stdout | from_json | int) * (r.item.count | int) %}
+      {% endfor %}
+      {{ ns.total }}
+    _vcpus_available: >-
+      {{ ((core_usage.stdout | from_json).limit | int) - ((core_usage.stdout | from_json).currentValue | int) }}
+
+- name: Report quota
+  ansible.builtin.debug:
+    msg: >-
+      {{ location }}: need ~{{ _vcpus_required | int }} vCPUs
+      {{ '(incl. temporary bootstrap node) ' if aro_architecture == 'classic' else '' }}
+      and {{ _vcpus_available }} are free. Also check the per-family quota
+      (az vm list-usage -l {{ location }} -o table).
+
+- name: Enforce quota
+  ansible.builtin.assert:
+    that: _vcpus_available | int >= _vcpus_required | int
+    fail_msg: >-
+      Insufficient regional vCPU quota in {{ location }}: need {{ _vcpus_required }},
+      have {{ _vcpus_available }}. Request an increase or set enforce_quota_check=false.
+    quiet: true
+  when: enforce_quota_check | bool

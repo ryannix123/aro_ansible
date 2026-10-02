@@ -130,3 +130,10 @@ dmypy.json
 
 # Pyre type checker
 .pyre/
+
+# ARO playbook secrets and outputs (never commit)
+vars/pull-secret.txt
+vars/kubeconfig-*
+vars/aro-cluster-info-*
+vars/aro-hcp-params-*
+vars/aro-deletion-log-*

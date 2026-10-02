@@ -1,57 +1,53 @@
 # Azure Red Hat OpenShift (ARO) Deployment
 
-![Red Hat OpenShift Logo](https://microsoft.github.io/aroworkshop/img/redhat-openshift.png)
+<p align="center">
+  <img src="images/aro.png" alt="Azure Red Hat OpenShift" width="300">
+</p>
 
 ## Overview
 
-Azure Red Hat OpenShift (ARO) provides highly available, fully managed OpenShift clusters on demand, monitored and operated jointly by Microsoft and Red Hat. Kubernetes is at the core of Red Hat OpenShift. The service-level agreement (SLA) guarantees 99.95% availability.
+Azure Red Hat OpenShift (ARO) provides highly available, fully managed OpenShift clusters on demand, monitored and operated jointly by Microsoft and Red Hat. Kubernetes is at the core of Red Hat OpenShift.
 
-This repository contains Ansible automation to simplify the deployment of an Azure Red Hat OpenShift cluster. The playbook automates the process described in the [official Microsoft documentation](https://docs.microsoft.com/en-us/azure/openshift/tutorial-create-cluster).
+This repository contains Ansible automation to deploy ARO in either of its two architectures:
+
+| `aro_architecture` | What you get | Status |
+|--------------------|--------------|--------|
+| `classic` (default) | ARO standard architecture — control plane VMs run in your subscription | GA |
+| `hcp` | ARO with **hosted control planes** — control plane runs in a Microsoft-managed subscription operated by Red Hat SREs; you pay only for worker nodes | Public preview |
 
 ## Features
 
-- **Fully automated deployment** - Deploy a production-ready ARO cluster with a single command
-- **Best practices included** - Networking, security, and scaling considerations built-in
-- **Idempotent execution** - Run the playbook multiple times safely
-- **Comprehensive output** - Detailed cluster information saved for easy access
+- **Two architectures, one playbook** - switch with `-e aro_architecture=hcp`
+- **Pre-flight checks** - resource provider registration and regional vCPU quota are verified before anything is created
+- **Idempotent execution** - re-runs converge instead of failing or duplicating work
+- **Secrets stay out of the console** - credentials are written to `0600` files and a ready-to-use kubeconfig
+- **Clean teardown** - `aro_delete.yml` handles both architectures and can run unattended
 
 ## Prerequisites
 
-Before running the playbook, ensure you have:
-
-- **Azure CLI** - [Installation instructions](https://docs.microsoft.com/en-us/cli/azure/install-azure-cli)
-- **Azure subscription** with sufficient quota (40-50 vCPUs in target region)
-- **Ansible** (v2.9+) with the `azure.azcollection` collection installed
+- **Azure CLI** - [Installation instructions](https://learn.microsoft.com/cli/azure/install-azure-cli) (HCP requires 2.67.0 or later)
+- **Azure permissions** - Owner, or Contributor + User Access Administrator (HCP creates role assignments)
+- **Ansible** with the `azure.azcollection` collection
   ```bash
   ansible-galaxy collection install azure.azcollection
-  pip install -r ~/.ansible/collections/ansible_collections/azure/azcollection/requirements-azure.txt
+  pip install -r ~/.ansible/collections/ansible_collections/azure/azcollection/requirements.txt
   ```
 - **OpenShift CLI tools** - [Latest `oc` & `kubectl` binaries](https://mirror.openshift.com/pub/openshift-v4/clients/ocp/latest/)
-- **Red Hat Pull Secret** (Required) - [Available from cloud.redhat.com](https://cloud.redhat.com)
+- **Red Hat pull secret** (classic only) - from [console.redhat.com](https://console.redhat.com/openshift/install/pull-secret)
 
-## Quota Requirements
-
-Ensure you have sufficient quota in your target Azure region:
-
-```bash
-# Check total vCPU quota
-az vm list-usage --location "Central US" --output table | grep "Total Regional vCPUs"
-
-# Check DSv3 family quota (for worker nodes)
-az vm list-usage --location "Central US" --output table | grep "Standard DSv3 Family vCPUs"
-```
+The ARO HCP CLI extension is installed automatically on first HCP run.
 
 ## Getting Started
 
 1. Clone this repository
    ```bash
-   git clone https://github.com/your-username/aro-deployment.git
-   cd aro-deployment
+   git clone https://github.com/ryannix123/aro_ansible.git
+   cd aro_ansible
    ```
 
-2. Download your Red Hat pull secret and save it as `pull-secret.txt` in the repository directory
+2. **Classic only:** download your pull secret from [console.redhat.com](https://console.redhat.com/openshift/install/pull-secret) and save it as `vars/pull-secret.txt`. It's listed in `.gitignore`, so it won't be committed.
 
-3. Review and modify the `aro_vars.yml` file to customize your deployment
+3. Review `vars/aro_vars.yml`
 
 4. Authenticate to Azure
    ```bash
@@ -60,51 +56,87 @@ az vm list-usage --location "Central US" --output table | grep "Standard DSv3 Fa
 
 5. Run the playbook
    ```bash
-   ansible-playbook aro_deployment.yml
-   ```
+   # Classic (standard architecture)
+   ansible-playbook aro_deployment.yaml
 
-6. Access your cluster using the information in the generated `aro-cluster-info-*.txt` file
+   # Hosted control planes (preview) - must be an HCP preview region
+   ansible-playbook aro_deployment.yaml -e aro_architecture=hcp -e location=eastus2 \
+     -e hcp_cluster_version=4.20 -e hcp_nodepool_version=4.20.8
+   ```
+   For HCP, leave the versions unset on the first run and the playbook prints what's available in your region.
+
+6. Access your cluster
+   ```bash
+   export KUBECONFIG=$PWD/vars/kubeconfig-<cluster_name>
+   oc whoami
+   ```
+   Connection details are in `vars/aro-cluster-info-<cluster_name>.txt`.
+
+## Hosted control planes notes
+
+- **Regions (preview):** australiaeast, brazilsouth, canadacentral, centralindia, eastus2, switzerlandnorth, uksouth, westeurope
+- **Everything is one ARM deployment:** `templates/aro_hcp.bicep` creates the VNet (worker subnet + delegated VNet integration subnet), NSG, 13 managed identities, role assignments, a Key Vault with an etcd KMS key, the cluster and a node pool. Typical time: 15-20 minutes.
+- **Immutable choices:** API visibility, ingress visibility, FIPS, and image registry can't be changed after creation.
+- **Access:** there is no kubeadmin and no built-in OAuth server. The playbook requests a break-glass admin kubeconfig valid for 24 hours. Configure an [external OIDC provider](https://learn.microsoft.com/azure/openshift/howto-configure-external-authentication) for ongoing access.
+- **Lock down the API:** set `hcp_api_authorized_cidrs: ["<your-ip>/32"]`.
+- **Re-runs:** if the cluster already exists, the ARM deployment is skipped (re-deploying would rotate the etcd key version). Override with `-e hcp_force_redeploy=true`.
 
 ## Configuration Options
 
-The deployment can be customized through the `aro_vars.yml` file:
+Key settings in `vars/aro_vars.yml` (see the file for the full list):
 
 | Parameter | Description | Default |
 |-----------|-------------|---------|
-| `location` | Azure region for deployment | centralus |
+| `aro_architecture` | `classic` or `hcp` | classic |
+| `location` | Azure region | centralus |
 | `resource_group` | Resource group name | aro |
-| `vnet_name` | Virtual network name | aro-vnet |
-| `cluster_name` | ARO cluster name | aro-cluster |
-| `domain` | Custom domain (optional) | openshifthelp.com |
-| `master_vm_size` | VM size for master nodes | Standard_D8s_v3 |
-| `worker_vm_size` | VM size for worker nodes | Standard_D4s_v3 |
-| `worker_count` | Number of worker nodes | 3 |
+| `cluster_name` | Cluster name | aro-cluster |
+| `enforce_quota_check` | Fail if regional vCPU quota is short | true |
+| `domain` | Custom domain (classic, optional) | openshifthelp.com |
+| `aro_version` | Pin an OpenShift version (classic, optional) | latest |
+| `master_vm_size` / `worker_vm_size` | Classic VM sizes | Standard_D8s_v3 / Standard_D4s_v3 |
+| `worker_count` | Classic worker count | 3 |
+| `hcp_cluster_version` / `hcp_nodepool_version` | HCP versions (minor / patch) | required |
+| `hcp_node_vm_size` / `hcp_node_count` | HCP node pool | Standard_D8s_v3 / 2 |
+| `hcp_api_visibility` / `hcp_ingress_visibility` | Public or Private | Public |
+| `hcp_api_authorized_cidrs` | CIDRs allowed to reach the API | [] (open) |
+| `hcp_fips` | FIPS-validated crypto on workers | false |
 
-## Post-Deployment Steps
+### Custom domain (classic)
 
-After deployment completes:
+If you set `domain`, create these DNS records after deployment. The playbook prints the IPs:
 
-1. Access the OpenShift console URL provided in the output
-2. Log in with the kubeadmin credentials
-3. Configure OAuth or other authentication methods
-4. Install the OpenShift GitOps Operator for CI/CD capabilities
-5. Deploy your applications
+```
+api.<domain>     A  <API IP>
+*.apps.<domain>  A  <Ingress IP>
+```
+
+## Deleting a cluster
+
+```bash
+ansible-playbook aro_delete.yml                              # interactive
+ansible-playbook aro_delete.yml -e aro_architecture=hcp
+ansible-playbook aro_delete.yml -e auto_approve=true -e delete_resource_group=true   # CI / AAP
+```
+
+For HCP, the Key Vault is purged after the resource group is deleted so the next deployment can reuse its name.
 
 ## Troubleshooting
 
-Common issues and their solutions:
+- **Quota exceeded**: request more quota in the Azure portal, or set `enforce_quota_check: false` to warn only. Also check the per-family quota: `az vm list-usage -l <region> -o table`
+- **HCP region error**: use one of the preview regions above
+- **HCP deployment failed**: the playbook prints the failing ARM operations; also see `az deployment operation group list -g <rg> -n aro-hcp-<cluster>`
+- **Authentication failures**: run `az login` and `az account show`
 
-- **Quota exceeded**: Request additional quota through the Azure portal
-- **Network connectivity issues**: Verify your firewall settings
-- **Authentication failures**: Ensure your Azure credentials are valid
-
-For more help, see the [ARO troubleshooting guide](https://docs.microsoft.com/en-us/azure/openshift/troubleshoot)
+See the [ARO troubleshooting guide](https://learn.microsoft.com/azure/openshift/troubleshoot).
 
 ## Documentation and Resources
 
-- [Official ARO Documentation](https://docs.microsoft.com/en-us/azure/openshift/)
-- [OpenShift 4 Documentation](https://docs.openshift.com/container-platform/4.10/welcome/index.html)
-- [Red Hat ARO Product Page](https://www.redhat.com/en/technologies/cloud-computing/openshift/azure)
+- [ARO documentation](https://learn.microsoft.com/azure/openshift/)
+- [Compare standard and hosted control planes architectures](https://learn.microsoft.com/azure/openshift/concepts-classic-hosted-control-planes-comparison)
+- [Create an ARO HCP cluster](https://learn.microsoft.com/azure/openshift/howto-create-custom-hosted-cluster)
+- [OpenShift Container Platform documentation](https://docs.redhat.com/en/documentation/openshift_container_platform/)
+- [Red Hat ARO product page](https://www.redhat.com/en/technologies/cloud-computing/openshift/azure)
 
 ## Video Tutorial
 
@@ -117,4 +149,4 @@ Contributions are welcome! Please feel free to submit a Pull Request.
 
 ## License
 
-This project is licensed under the MIT License - see the LICENSE file for details.
+This project is licensed under the GNU General Public License v3.0 - see the LICENSE file for details.

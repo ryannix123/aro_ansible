@@ -1,0 +1,244 @@
+---
+# Azure Red Hat OpenShift with hosted control planes (public preview)
+# Infra + cluster + node pool are one idempotent ARM deployment of
+# templates/aro_hcp.bicep; Ansible handles prereqs, waiting and access.
+
+- name: Define HCP preview constraints
+  ansible.builtin.set_fact:
+    _hcp_regions:
+      - australiaeast
+      - brazilsouth
+      - canadacentral
+      - centralindia
+      - eastus2
+      - switzerlandnorth
+      - uksouth
+      - westeurope
+    _hcp_deployment_name: "aro-hcp-{{ cluster_name }}"
+    _hcp_params_file: "{{ playbook_dir }}/vars/aro-hcp-params-{{ cluster_name }}.json"
+    _hcp_kubeconfig: "{{ playbook_dir }}/vars/kubeconfig-{{ cluster_name }}"
+
+- name: Check region supports ARO HCP preview
+  ansible.builtin.assert:
+    that: location in _hcp_regions
+    fail_msg: >-
+      '{{ location }}' is not an ARO HCP preview region. Use one of:
+      {{ _hcp_regions | join(', ') }} (e.g. -e location=eastus2)
+    quiet: true
+  when: not (hcp_skip_region_check | default(false) | bool)
+
+# ---------- CLI prerequisites ----------
+- name: Read Azure CLI version
+  ansible.builtin.command: az version -o json
+  register: az_version
+  changed_when: false
+
+- name: Require Azure CLI 2.67.0 or later
+  ansible.builtin.assert:
+    that: (az_version.stdout | from_json)['azure-cli'] is version('2.67.0', '>=')
+    fail_msg: "ARO HCP needs Azure CLI >= 2.67.0. Run: az upgrade"
+    quiet: true
+
+- name: Check for the ARO HCP CLI extension
+  ansible.builtin.command: az aro hcp -h
+  register: hcp_ext
+  failed_when: false
+  changed_when: false
+
+- name: Install the ARO HCP CLI extension
+  when: hcp_ext.rc != 0
+  block:
+    - name: Resolve the current extension wheel URL
+      ansible.builtin.uri:
+        url: https://aka.ms/aro-hcp-cli
+        method: HEAD
+        follow_redirects: all
+      register: hcp_wheel_head
+
+    - name: Download extension wheel (keeps its real filename, which pip requires)
+      ansible.builtin.get_url:
+        url: "{{ hcp_wheel_head.url }}"
+        dest: "/tmp/{{ hcp_wheel_head.url | urlsplit('path') | basename }}"
+        mode: "0644"
+      register: hcp_wheel
+
+    - name: Add extension
+      ansible.builtin.command: az extension add --source {{ hcp_wheel.dest }} --yes
+      changed_when: true
+
+# ---------- Versions ----------
+- name: List available OpenShift versions when none are pinned
+  ansible.builtin.command: az aro hcp version list --location {{ location }} -o table
+  register: hcp_versions
+  changed_when: false
+  when: hcp_cluster_version | length == 0 or hcp_nodepool_version | length == 0
+
+- name: Stop and ask for versions
+  ansible.builtin.fail:
+    msg: |
+      Set hcp_cluster_version (minor, e.g. 4.20) and hcp_nodepool_version
+      (patch within that minor, e.g. 4.20.8) in vars/aro_vars.yml or with -e.
+      Available in {{ location }}:
+      {{ hcp_versions.stdout }}
+  when: hcp_versions is not skipped
+
+- name: Node pool version must sit inside the cluster minor version
+  ansible.builtin.assert:
+    that: hcp_nodepool_version is match('^' ~ (hcp_cluster_version | regex_escape) ~ '\.\d+$')
+    fail_msg: "hcp_nodepool_version {{ hcp_nodepool_version }} is not a {{ hcp_cluster_version }}.z release"
+    quiet: true
+
+# ---------- Deploy ----------
+- name: Check if the HCP cluster exists
+  ansible.builtin.command: >
+    az aro hcp cluster show --name {{ cluster_name }} --resource-group {{ resource_group }} -o json
+  register: hcp_exists
+  failed_when: false
+  changed_when: false
+
+- name: Deploy network, identities, KMS, cluster and node pool
+  when: hcp_exists.rc != 0 or (hcp_force_redeploy | bool)
+  block:
+    - name: Write ARM parameters file
+      ansible.builtin.copy:
+        dest: "{{ _hcp_params_file }}"
+        mode: "0600"
+        content: |
+          {
+            "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentParameters.json#",
+            "contentVersion": "1.0.0.0",
+            "parameters": {
+          {% for k, v in _params.items() %}
+              {{ k | to_json }}: {"value": {{ (v | int) if k in ['nodeCount', 'nodeOsDiskSizeGiB'] else (v | to_json) }}}{{ ',' if not loop.last else '' }}
+          {% endfor %}
+            }
+          }
+      vars:
+        _params:
+          clusterName: "{{ cluster_name }}"
+          location: "{{ location }}"
+          clusterVersion: "{{ hcp_cluster_version }}"
+          nodePoolVersion: "{{ hcp_nodepool_version }}"
+          managedResourceGroupName: "{{ cluster_name }}-managed-rg"
+          baseDomainPrefix: "{{ hcp_base_domain_prefix }}"
+          apiVisibility: "{{ hcp_api_visibility }}"
+          apiAuthorizedCidrs: "{{ hcp_api_authorized_cidrs }}"
+          ingressVisibility: "{{ hcp_ingress_visibility }}"
+          cryptoRestrictions: "{{ 'FIPS' if hcp_fips | bool else 'None' }}"
+          imageRegistryState: "{{ hcp_image_registry }}"
+          nsgName: "{{ hcp_nsg_name }}"
+          vnetName: "{{ hcp_vnet_name }}"
+          vnetCidr: "{{ hcp_vnet_cidr }}"
+          workerSubnetName: "{{ hcp_worker_subnet_name }}"
+          workerSubnetCidr: "{{ hcp_worker_subnet_cidr }}"
+          integrationSubnetName: "{{ hcp_integration_subnet_name }}"
+          integrationSubnetCidr: "{{ hcp_integration_subnet_cidr }}"
+          keyVaultName: "{{ hcp_keyvault_name_effective }}"
+          nodePoolName: "{{ hcp_nodepool_name }}"
+          nodeVmSize: "{{ hcp_node_vm_size }}"
+          nodeCount: "{{ hcp_node_count | int }}"
+          nodeOsDiskSizeGiB: "{{ hcp_node_os_disk_gib | int }}"
+          tags: "{{ aro_tags | combine({'DeploymentDate': timestamp, 'Architecture': 'HCP'}) }}"
+
+    - name: Start ARM deployment (15-20 minutes)
+      ansible.builtin.command: >
+        az deployment group create
+        --resource-group {{ resource_group }}
+        --name {{ _hcp_deployment_name }}
+        --template-file {{ playbook_dir }}/templates/aro_hcp.bicep
+        --parameters @{{ _hcp_params_file }}
+        --no-wait
+      changed_when: true
+
+    - name: Wait for the deployment to finish
+      ansible.builtin.command: >
+        az deployment group show --resource-group {{ resource_group }}
+        --name {{ _hcp_deployment_name }} --query properties.provisioningState -o tsv
+      register: hcp_deploy_state
+      until: hcp_deploy_state.stdout in ['Succeeded', 'Failed', 'Canceled']
+      retries: "{{ provision_timeout_minutes | int * 2 }}"
+      delay: 30
+      changed_when: false
+
+    - name: Show deployment error
+      when: hcp_deploy_state.stdout != 'Succeeded'
+      block:
+        - name: Fetch failed operations
+          ansible.builtin.command: >
+            az deployment operation group list --resource-group {{ resource_group }}
+            --name {{ _hcp_deployment_name }} -o json
+            --query "[?properties.provisioningState=='Failed'].{resource: properties.targetResource.resourceName, error: properties.statusMessage.error}"
+          register: hcp_failed_ops
+          changed_when: false
+
+        - name: Fail with details
+          ansible.builtin.fail:
+            msg: "ARM deployment {{ hcp_deploy_state.stdout }}: {{ hcp_failed_ops.stdout | from_json | to_nice_json }}"
+
+- name: Confirm cluster and node pool are Succeeded
+  ansible.builtin.command: >
+    az aro hcp cluster {{ item.cmd }} --resource-group {{ resource_group }}
+    --query properties.provisioningState -o tsv
+  loop:
+    - { name: cluster, cmd: "show --name {{ cluster_name }}" }
+    - { name: node pool, cmd: "nodepool show --cluster-name {{ cluster_name }} --name {{ hcp_nodepool_name }}" }
+  loop_control:
+    label: "{{ item.name }}"
+  register: hcp_state
+  until: hcp_state.stdout == 'Succeeded'
+  retries: 20
+  delay: 30
+  changed_when: false
+
+# ---------- Access ----------
+# HCP has no kubeadmin and no built-in OAuth server. A break-glass
+# credential (24h lifetime) gets you in; set up external OIDC auth next.
+- name: Request a temporary break-glass admin kubeconfig (valid 24h)
+  ansible.builtin.command: >
+    az aro hcp cluster request-credential --admin
+    --name {{ cluster_name }} --resource-group {{ resource_group }}
+    --file {{ _hcp_kubeconfig }}
+  changed_when: true
+
+- name: Restrict kubeconfig permissions
+  ansible.builtin.file:
+    path: "{{ _hcp_kubeconfig }}"
+    mode: "0600"
+
+- name: Get cluster details
+  ansible.builtin.command: >
+    az aro hcp cluster show --name {{ cluster_name }} --resource-group {{ resource_group }} -o json
+  register: hcp_details_raw
+  changed_when: false
+
+- name: Extract endpoints
+  ansible.builtin.set_fact:
+    _hcp_console: "{{ ((hcp_details_raw.stdout | from_json).properties.console | default({})).url | default('see Azure portal') }}"
+    _hcp_api: "{{ ((hcp_details_raw.stdout | from_json).properties.api | default({})).url | default('see Azure portal') }}"
+
+- name: Save cluster access information
+  ansible.builtin.copy:
+    dest: "{{ playbook_dir }}/vars/aro-cluster-info-{{ cluster_name }}.txt"
+    mode: "0600"
+    content: |
+      ARO Cluster Information (hosted control planes, preview)
+      ========================================================
+      Resource Group: {{ resource_group }}
+      Cluster Name:   {{ cluster_name }}
+      Version:        {{ hcp_cluster_version }} (node pool {{ hcp_nodepool_version }})
+      Console URL:    {{ _hcp_console }}
+      API Server:     {{ _hcp_api }}
+      Key Vault:      {{ hcp_keyvault_name_effective }}
+      Kubeconfig:     {{ _hcp_kubeconfig }} (break-glass, expires in 24h)
+      Refresh:        az aro hcp cluster request-credential --admin -n {{ cluster_name }} -g {{ resource_group }} --file {{ _hcp_kubeconfig }}
+      Revoke all:     az aro hcp cluster revoke-credential -n {{ cluster_name }} -g {{ resource_group }}
+
+- name: Deployment summary
+  ansible.builtin.debug:
+    msg: |
+      ARO HCP cluster '{{ cluster_name }}' is ready.
+        Console:    {{ _hcp_console }}
+        API:        {{ _hcp_api }}
+        Kubeconfig: export KUBECONFIG={{ _hcp_kubeconfig }}   (break-glass, 24h)
+      Next: configure an external OIDC provider (e.g. Entra ID) - HCP has no
+      built-in OAuth server: https://learn.microsoft.com/azure/openshift/howto-configure-external-authentication

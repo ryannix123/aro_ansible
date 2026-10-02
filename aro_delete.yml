@@ -1,136 +1,123 @@
 ---
 # Description
 # ===========
-# This playbook deletes an Azure Red Hat OpenShift cluster
-# Prerequisites:
-#  - az login (Authenticate to Azure)
-#  - vars/aro_vars.yml with resource group and cluster name
+# Deletes an Azure Red Hat OpenShift cluster (classic or HCP) and,
+# optionally, its resource group.
+#
+#   ansible-playbook aro_delete.yml                          # interactive
+#   ansible-playbook aro_delete.yml -e aro_architecture=hcp
+#   ansible-playbook aro_delete.yml -e auto_approve=true -e delete_resource_group=true   # CI / AAP
 
 - name: Delete Azure Red Hat OpenShift Cluster
   hosts: localhost
   connection: local
-  collections:
-    - azure.azcollection
+  gather_facts: false
   vars_files:
     - vars/aro_vars.yml
+  vars:
+    auto_approve: false
+    delete_resource_group: false
 
   tasks:
-    - name: Set facts for ARO deletion
-      set_fact:
-        timestamp: "{{ lookup('pipe', 'date +%Y%m%d%H%M%S') }}"
-      
+    - name: Validate architecture choice
+      ansible.builtin.assert:
+        that: aro_architecture in ['classic', 'hcp']
+        quiet: true
+
     - name: Verify Azure CLI is installed and authenticated
-      shell: az account show
+      ansible.builtin.command: az account show -o json
       register: az_account
-      failed_when: az_account.rc != 0
       changed_when: false
-      
+
+    - name: Record subscription and command prefix
+      ansible.builtin.set_fact:
+        az_subscription_id: "{{ (az_account.stdout | from_json).id }}"
+        timestamp: "{{ now(utc=true, fmt='%Y%m%d%H%M%S') }}"
+        _aro_cmd: "{{ 'az aro hcp cluster' if aro_architecture == 'hcp' else 'az aro' }}"
+
     - name: Check if ARO cluster exists
-      command: >
-        az aro show
-        --name {{ cluster_name }}
-        --resource-group {{ resource_group }}
+      ansible.builtin.command: >
+        {{ _aro_cmd }} show --name {{ cluster_name }} --resource-group {{ resource_group }} -o json
       register: aro_exists
       failed_when: false
       changed_when: false
-      
-    - name: Confirm deletion
-      pause:
+
+    - name: Nothing to delete
+      ansible.builtin.debug:
+        msg: "No {{ aro_architecture }} cluster '{{ cluster_name }}' in '{{ resource_group }}'."
+      when: aro_exists.rc != 0
+
+    - name: Confirm cluster deletion
+      ansible.builtin.pause:
         prompt: |
-          WARNING: You are about to delete the ARO cluster '{{ cluster_name }}' in resource group '{{ resource_group }}'.
-          This operation cannot be undone. All data in the cluster will be permanently deleted.
-          
-          Type 'yes' to confirm deletion or press Ctrl+C to abort
+          WARNING: delete {{ aro_architecture }} ARO cluster '{{ cluster_name }}' in '{{ resource_group }}'?
+          This cannot be undone. Type 'yes' to continue
       register: confirmation
-      
-    - name: Verify confirmation
-      fail:
-        msg: "Deletion aborted by user"
-      when: confirmation.user_input != 'yes'
-      
-    - name: Delete ARO cluster
-      command: >
-        az aro delete
-        --name {{ cluster_name }}
-        --resource-group {{ resource_group }}
-        --yes
-      register: aro_delete
-      when: aro_exists.rc == 0
-      async: 3600  # Allow up to 1 hour for cluster deletion
-      poll: 0
-      
-    - name: Check ARO cluster deletion status
-      async_status:
-        jid: "{{ aro_delete.ansible_job_id }}"
-      register: job_result
-      until: job_result.finished
-      retries: 60
-      delay: 60
-      when: aro_exists.rc == 0
-      
-    - name: List remaining resources in resource group
-      azure_rm_resource_info:
-        resource_group: "{{ resource_group }}"
-      register: remaining_resources
-      when: aro_exists.rc == 0
-      
-    - name: Display remaining resources
-      debug:
-        var: remaining_resources
-      when: aro_exists.rc == 0
-      
+      when: aro_exists.rc == 0 and not (auto_approve | bool)
+
+    - name: Abort unless confirmed
+      ansible.builtin.fail:
+        msg: Deletion aborted by user
+      when:
+        - aro_exists.rc == 0
+        - not (auto_approve | bool)
+        - confirmation.user_input | default('') != 'yes'
+
+    - name: Delete classic cluster
+      ansible.builtin.command: >
+        az aro delete --name {{ cluster_name }} --resource-group {{ resource_group }} --yes
+      when: aro_exists.rc == 0 and aro_architecture == 'classic'
+      changed_when: true
+
+    # Generic ARM delete; blocks until the cluster (and its node pools) are gone
+    - name: Delete HCP cluster
+      ansible.builtin.command: az resource delete --ids {{ (aro_exists.stdout | from_json).id }}
+      when: aro_exists.rc == 0 and aro_architecture == 'hcp'
+      changed_when: true
+
     - name: Confirm resource group deletion
-      pause:
+      ansible.builtin.pause:
         prompt: |
-          ARO cluster '{{ cluster_name }}' has been deleted.
-          
-          Do you want to delete the resource group '{{ resource_group }}' as well?
-          This will delete ALL resources in this resource group.
-          
-          Type 'yes' to confirm deletion or press Ctrl+C to abort
+          Also delete resource group '{{ resource_group }}' and EVERYTHING in it
+          (VNet, identities, Key Vault)? Type 'yes' to delete, anything else to keep
       register: rg_confirmation
-      when: aro_exists.rc == 0
-      
+      when: not (auto_approve | bool)
+
+    - name: Decide on resource group deletion
+      ansible.builtin.set_fact:
+        _delete_rg: >-
+          {{ (delete_resource_group | bool) if (auto_approve | bool)
+             else (rg_confirmation.user_input | default('') == 'yes') }}
+
     - name: Delete resource group
-      azure_rm_resourcegroup:
+      azure.azcollection.azure_rm_resourcegroup:
         name: "{{ resource_group }}"
         state: absent
         force_delete_nonempty: true
-      register: rg_delete
-      when: aro_exists.rc == 0 and rg_confirmation.user_input == 'yes'
-      
-    - name: Log deletion action
-      copy:
-        content: |
-          ARO Cluster Deletion Log
-          =======================
-          Date: {{ timestamp }}
-          Resource Group: {{ resource_group }}
-          Cluster Name: {{ cluster_name }}
-          Status: Deleted
-          Resource Group Deleted: {{ rg_confirmation.user_input == 'yes' }}
-        dest: "vars/aro-deletion-log-{{ timestamp }}.txt"
-        mode: '0600'
+      when: _delete_rg | bool
+
+    # Key Vaults are soft-deleted with their RG. Purge it so the same
+    # deterministic name can be reused on the next HCP deployment.
+    - name: Purge soft-deleted HCP Key Vault
+      ansible.builtin.command: >
+        az keyvault purge --name {{ hcp_keyvault_name_effective }} --location {{ location }}
+      register: kv_purge
+      failed_when: kv_purge.rc != 0 and 'not found' not in (kv_purge.stderr | lower)
+      changed_when: kv_purge.rc == 0
+      when: aro_architecture == 'hcp' and (_delete_rg | bool)
+
+    - name: Remove local credentials for the deleted cluster
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - vars/kubeconfig-{{ cluster_name }}
+        - vars/aro-cluster-info-{{ cluster_name }}.txt
+        - vars/aro-hcp-params-{{ cluster_name }}.json
       when: aro_exists.rc == 0
-      
-    - name: Display deletion complete message
-      debug:
-        msg: |
-          ARO Cluster Deletion Complete!
-          ==============================
-          The ARO cluster '{{ cluster_name }}' has been deleted.
-          {% if rg_confirmation.user_input == 'yes' %}
-          The resource group '{{ resource_group }}' has also been deleted.
-          {% else %}
-          The resource group '{{ resource_group }}' has been preserved.
-          {% endif %}
-      when: aro_exists.rc == 0
-      
-    - name: Display no cluster message
-      debug:
-        msg: |
-          ARO Cluster Not Found!
-          =====================
-          The ARO cluster '{{ cluster_name }}' does not exist in resource group '{{ resource_group }}'.
-          No action was taken.
-      when: aro_exists.rc != 0
+
+    - name: Summary
+      ansible.builtin.debug:
+        msg: >-
+          {{ 'Cluster ' ~ cluster_name ~ ' deleted. ' if aro_exists.rc == 0 else '' }}Resource group
+          '{{ resource_group }}' {{ 'deleted' if _delete_rg | bool else 'preserved' }}.

@@ -1,11 +1,35 @@
 ---
+# =====================================================================
+# Architecture selector
+#   classic -> Azure Red Hat OpenShift, standard architecture (GA)
+#   hcp     -> Azure Red Hat OpenShift with hosted control planes (public preview)
+# Override at runtime:  ansible-playbook aro_deployment.yaml -e aro_architecture=hcp
+# =====================================================================
+aro_architecture: classic
+
 # Azure Region
+#   ARO HCP preview regions (Sept 2026): australiaeast, brazilsouth, canadacentral,
+#   centralindia, eastus2, switzerlandnorth, uksouth, westeurope
+#   (centralus is NOT an HCP preview region; use eastus2 for HCP)
 location: centralus
 
 # Resource Group
 resource_group: aro
 
-# Network Configuration
+# Tags applied to everything we create
+aro_tags:
+  Project: ARO-Deployment
+  DeployedBy: Ansible
+
+# Fail early if regional vCPU quota looks insufficient (set false to warn only)
+enforce_quota_check: true
+
+# Max minutes to wait for cluster provisioning
+provision_timeout_minutes: 75
+
+# ---------------------------------------------------------------------
+# Classic (standard architecture) settings
+# ---------------------------------------------------------------------
 vnet_name: aro-vnet
 vnet_cidr: 10.0.0.0/22
 master_subnet_name: master-subnet
@@ -13,13 +37,61 @@ master_subnet_cidr: 10.0.0.0/23
 worker_subnet_name: worker-subnet
 worker_subnet_cidr: 10.0.2.0/23
 
-# ARO Cluster Configuration
 cluster_name: aro-cluster
-domain: openshifthelp.com # Optional, remove this line if domain is not needed
+# Custom domain is optional. If set, you must create DNS A records for
+# api.<domain> and *.apps.<domain>; the playbook prints the IPs to use.
+domain: openshifthelp.com
+# Optional: pin an OpenShift version (list with: az aro get-versions -l <region>)
+aro_version: ""
 master_vm_size: Standard_D8s_v3
 worker_vm_size: Standard_D4s_v3
 worker_count: 3
 worker_vm_disk_size_gb: 128
 
-# Path to pull secret file
+# Pull secret (classic only) - downloaded from console.redhat.com
 pull_secret_file: vars/pull-secret.txt
+
+# ---------------------------------------------------------------------
+# Hosted control planes (HCP) settings - used when aro_architecture: hcp
+# ---------------------------------------------------------------------
+# Required. Leave blank and the playbook prints what is available in your region.
+#   Cluster = minor version (4.20), node pool = patch within that minor (4.20.8)
+hcp_cluster_version: ""
+hcp_nodepool_version: ""
+
+hcp_vnet_name: aro-hcp-vnet
+hcp_vnet_cidr: 10.1.0.0/16
+hcp_worker_subnet_name: workers
+hcp_worker_subnet_cidr: 10.1.0.0/24
+hcp_integration_subnet_name: vnet-integration   # delegated to the ARO HCP service
+hcp_integration_subnet_cidr: 10.1.1.0/24
+hcp_nsg_name: aro-hcp-nsg
+
+hcp_nodepool_name: workers
+hcp_node_vm_size: Standard_D8s_v3
+hcp_node_count: 2
+hcp_node_os_disk_gib: 64
+
+# These are IMMUTABLE after creation
+hcp_api_visibility: Public          # Public | Private
+hcp_ingress_visibility: Public      # Public | Private
+hcp_fips: false                     # true -> FIPS-validated crypto on workers
+hcp_image_registry: Enabled         # Enabled | Disabled
+hcp_base_domain_prefix: ""          # optional, <=15 chars, lowercase
+
+# Lock the public API server down to these CIDRs (e.g. your home IP/32). Empty = open.
+hcp_api_authorized_cidrs: []
+
+# Key Vault for etcd KMS encryption. Must be globally unique (3-24 chars).
+# Leave blank to derive a stable name from subscription + RG + cluster.
+hcp_keyvault_name: ""
+
+# Re-run the ARM deployment even if the cluster already exists.
+# Off by default: re-deploying rotates the etcd key version and can
+# try to roll the node pool back after an upgrade.
+hcp_force_redeploy: false
+
+# --- Derived values (don't edit) ---
+hcp_keyvault_name_effective: >-
+  {{ hcp_keyvault_name if hcp_keyvault_name | length > 0
+     else 'kv' ~ ((az_subscription_id ~ resource_group ~ cluster_name) | hash('sha1'))[:20] }}

@@ -1,0 +1,148 @@
+---
+# ARO standard architecture
+
+- name: Verify pull secret exists
+  ansible.builtin.stat:
+    path: "{{ pull_secret_file }}"
+  register: pull_secret_stat
+
+- name: Fail if pull secret is missing
+  ansible.builtin.fail:
+    msg: "Pull secret {{ pull_secret_file }} not found. Download it from console.redhat.com."
+  when: not pull_secret_stat.stat.exists
+
+- name: Ensure virtual network exists
+  azure.azcollection.azure_rm_virtualnetwork:
+    resource_group: "{{ resource_group }}"
+    name: "{{ vnet_name }}"
+    address_prefixes_cidr:
+      - "{{ vnet_cidr }}"
+    tags: "{{ aro_tags }}"
+
+# Private link service policies must be disabled on the master subnet so the
+# ARO resource provider can reach the cluster. Declared here, so it's idempotent.
+- name: Ensure master subnet exists
+  azure.azcollection.azure_rm_subnet:
+    resource_group: "{{ resource_group }}"
+    virtual_network_name: "{{ vnet_name }}"
+    name: "{{ master_subnet_name }}"
+    address_prefix_cidr: "{{ master_subnet_cidr }}"
+    private_link_service_network_policies: Disabled
+    service_endpoints:
+      - service: Microsoft.ContainerRegistry
+
+- name: Ensure worker subnet exists
+  azure.azcollection.azure_rm_subnet:
+    resource_group: "{{ resource_group }}"
+    virtual_network_name: "{{ vnet_name }}"
+    name: "{{ worker_subnet_name }}"
+    address_prefix_cidr: "{{ worker_subnet_cidr }}"
+    service_endpoints:
+      - service: Microsoft.ContainerRegistry
+
+- name: Check if ARO cluster exists
+  ansible.builtin.command: >
+    az aro show --name {{ cluster_name }} --resource-group {{ resource_group }} -o json
+  register: aro_exists
+  failed_when: false
+  changed_when: false
+
+- name: Create ARO cluster (returns immediately; progress is polled below)
+  ansible.builtin.command:
+    argv: "{{ _create_argv }}"
+  vars:
+    _create_argv: >-
+      {{ ['az', 'aro', 'create',
+          '--resource-group', resource_group,
+          '--name', cluster_name,
+          '--vnet', vnet_name,
+          '--master-subnet', master_subnet_name,
+          '--worker-subnet', worker_subnet_name,
+          '--pull-secret', '@' ~ pull_secret_file,
+          '--master-vm-size', master_vm_size,
+          '--worker-vm-size', worker_vm_size,
+          '--worker-count', worker_count | string,
+          '--worker-vm-disk-size-gb', worker_vm_disk_size_gb | string,
+          '--no-wait']
+         + (['--domain', domain] if (domain | default('') | length > 0) else [])
+         + (['--version', aro_version] if (aro_version | default('') | length > 0) else [])
+         + ['--tags'] + (_tags.items() | map('join', '=') | list) }}
+    _tags: "{{ aro_tags | combine({'DeploymentDate': timestamp}) }}"
+  when: aro_exists.rc != 0
+  changed_when: true
+
+- name: Wait for cluster provisioning (typically 35-45 minutes)
+  ansible.builtin.command: >
+    az aro show --name {{ cluster_name }} --resource-group {{ resource_group }}
+    --query provisioningState -o tsv
+  register: aro_state
+  until: aro_state.stdout in ['Succeeded', 'Failed', 'Canceled']
+  retries: "{{ provision_timeout_minutes | int }}"
+  delay: 60
+  changed_when: false
+
+- name: Fail if provisioning did not succeed
+  ansible.builtin.fail:
+    msg: "Cluster provisioning ended in state {{ aro_state.stdout }}. Check: az aro show -n {{ cluster_name }} -g {{ resource_group }}"
+  when: aro_state.stdout != 'Succeeded'
+
+- name: Get cluster details
+  ansible.builtin.command: >
+    az aro show --name {{ cluster_name }} --resource-group {{ resource_group }} -o json
+  register: cluster_details_raw
+  changed_when: false
+
+- name: Get kubeadmin credentials
+  ansible.builtin.command: >
+    az aro list-credentials --name {{ cluster_name }} --resource-group {{ resource_group }} -o json
+  register: kubeadmin_creds
+  changed_when: false
+  no_log: true
+
+- name: Remove stale admin kubeconfig
+  ansible.builtin.file:
+    path: "{{ playbook_dir }}/vars/kubeconfig-{{ cluster_name }}"
+    state: absent
+
+- name: Write admin kubeconfig (no kubeadmin password needed for oc)
+  ansible.builtin.command: >
+    az aro get-admin-kubeconfig --name {{ cluster_name }}
+    --resource-group {{ resource_group }} --file {{ playbook_dir }}/vars/kubeconfig-{{ cluster_name }}
+  changed_when: true
+
+- name: Set cluster facts
+  ansible.builtin.set_fact:
+    _cluster: "{{ cluster_details_raw.stdout | from_json }}"
+
+- name: Save cluster access information (mode 0600, keep out of git)
+  ansible.builtin.copy:
+    dest: "{{ playbook_dir }}/vars/aro-cluster-info-{{ cluster_name }}.txt"
+    mode: "0600"
+    content: |
+      ARO Cluster Information (classic)
+      =================================
+      Resource Group: {{ resource_group }}
+      Cluster Name:   {{ cluster_name }}
+      Version:        {{ _cluster.clusterProfile.version | default('n/a') }}
+      Console URL:    {{ _cluster.consoleProfile.url }}
+      API Server:     {{ _cluster.apiserverProfile.url }}
+      API IP:         {{ _cluster.apiserverProfile.ip }}
+      Ingress IP:     {{ _cluster.ingressProfiles[0].ip }}
+      Username:       {{ (kubeadmin_creds.stdout | from_json).kubeadminUsername }}
+      Password:       {{ (kubeadmin_creds.stdout | from_json).kubeadminPassword }}
+      Kubeconfig:     {{ playbook_dir }}/vars/kubeconfig-{{ cluster_name }}
+  no_log: true
+
+- name: Deployment summary
+  ansible.builtin.debug:
+    msg: |
+      ARO cluster '{{ cluster_name }}' is ready.
+        Console:    {{ _cluster.consoleProfile.url }}
+        API:        {{ _cluster.apiserverProfile.url }}
+        Kubeconfig: export KUBECONFIG={{ playbook_dir }}/vars/kubeconfig-{{ cluster_name }}
+        kubeadmin:  {{ playbook_dir }}/vars/aro-cluster-info-{{ cluster_name }}.txt
+      {% if domain | default('') | length > 0 %}
+      Custom domain DNS records to create:
+        api.{{ domain }}     A  {{ _cluster.apiserverProfile.ip }}
+        *.apps.{{ domain }}  A  {{ _cluster.ingressProfiles[0].ip }}
+      {% endif %}
