@@ -1,7 +1,7 @@
 # Azure Red Hat OpenShift (ARO) Deployment
 
 <p align="center">
-  <img src="images/aro.png" alt="Azure Red Hat OpenShift" width="300">
+  <img src="images/aro.png" alt="Azure Red Hat OpenShift" width="600">
 </p>
 
 ## Overview
