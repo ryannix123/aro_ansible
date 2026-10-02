@@ -141,7 +141,12 @@ See the [ARO troubleshooting guide](https://learn.microsoft.com/azure/openshift/
 ## Video Tutorial
 
 A step-by-step video tutorial is available here:
-[![ARO Deployment Tutorial](https://img.youtube.com/vi/d701iQ2v2J0/0.jpg)](https://youtu.be/d701iQ2v2J0)
+
+<p align="center">
+  <a href="https://youtu.be/d701iQ2v2J0">
+    <img src="https://img.youtube.com/vi/d701iQ2v2J0/0.jpg" alt="ARO Deployment Tutorial" width="600">
+  </a>
+</p>
 
 ## Contributing
 
